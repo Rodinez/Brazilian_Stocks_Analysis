@@ -1,6 +1,8 @@
 import requests
 import json
 import os
+import zipfile
+import shutil
 from bs4 import BeautifulSoup
 
 datasets = {
@@ -42,9 +44,7 @@ def create_dict(data):
 def check_file_version(data: dict):
     updates = []
     if not os.path.exists(HIST_PATH):
-        with open(HIST_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-            return None
+        return [(key, value["name"]) for key, value in data.items()]
     
     with open(HIST_PATH, encoding="utf8") as f:
         last_data = dict(json.load(f))
@@ -52,34 +52,60 @@ def check_file_version(data: dict):
     for key, value in data.items():
         last_value = last_data.get(key)
         if value != last_value:
-            updates.append((key, value[0]))
+            updates.append((key, value["name"]))
             
     return updates
 
 def download_new_files(links):
     for link, name in links:
-        href = link
-
         if "dfp" in link:
-            PATH = f"data/dfp/{name}"
-            TEMP_PATH = "data/dfp/temp"
+            tipo = "dfp"
         else:
-            PATH = f"data/itr/{name}"
-            TEMP_PATH = "data/itr/temp"
+            tipo = "itr"
+            
+        name_no_ext = os.path.splitext(name)[0]
+            
+        PATH = os.path.join("data", tipo, name_no_ext)
+        TEMP_EXTRACT = os.path.join("data", tipo, "temp", name_no_ext)
+        TEMP_FILE = os.path.join("data", tipo, "temp", name)
+        
+        os.makedirs(os.path.join("data", tipo), exist_ok=True)
+        os.makedirs(os.path.dirname(TEMP_FILE), exist_ok=True)
 
         response = requests.get(link, stream=True)
         response.raise_for_status()
 
-        with open(TEMP_PATH, "wb") as f:
+        with open(TEMP_FILE, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-    
+                
+        with zipfile.ZipFile(TEMP_FILE, "r") as z:
+            erro = z.testzip()
+
+            if erro is not None:
+                raise ValueError(f"Arquivo corrompido: {erro}")
+            
+        os.makedirs(TEMP_EXTRACT, exist_ok=True)
+
+        with zipfile.ZipFile(TEMP_FILE, "r") as z:
+            z.extractall(TEMP_EXTRACT)
+            
+        if os.path.exists(PATH):
+            shutil.rmtree(PATH)
+
+        shutil.move(TEMP_EXTRACT, PATH)
+
+        shutil.rmtree(os.path.dirname(TEMP_FILE))
+        
 def check_catalog():
     zips = get_links()            
     data = create_dict(zips)
     links = check_file_version(data)
-    #if links:
-        #download_new_files(links)
+    if links:
+        download_new_files(links)
+        
+        with open(HIST_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
                 
 if __name__ == "__main__":
     check_catalog()
