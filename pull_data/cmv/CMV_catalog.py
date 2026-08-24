@@ -7,10 +7,12 @@ from bs4 import BeautifulSoup
 
 datasets = {
     "dfp": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/DFP/DADOS/",
-    "itr": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/"
+    "itr": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/ITR/DADOS/",
+    "fre": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FRE/DADOS/",
+    "fca": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/FCA/DADOS/"
 }
 
-HIST_PATH = "pull_data/cmv/hist_dfp_itr.json"
+HIST_PATH = "pull_data/cmv/hist_cmv.json"
 
 def get_links():
     zips = []
@@ -59,17 +61,21 @@ def check_file_version(data: dict):
 def download_new_files(links):
     for link, name in links:
         if "dfp" in link:
-            tipo = "dfp"
+            type = "dfp"
+        elif "itr" in link:
+            type = "itr"
+        elif "fre" in link:
+            type = "fre"
         else:
-            tipo = "itr"
+            type = "fca"
             
         name_no_ext = os.path.splitext(name)[0]
             
-        PATH = os.path.join("data", tipo, name_no_ext)
-        TEMP_EXTRACT = os.path.join("data", tipo, "temp", name_no_ext)
-        TEMP_FILE = os.path.join("data", tipo, "temp", name)
+        PATH = os.path.join("data", type, name_no_ext)
+        TEMP_EXTRACT = os.path.join("data", type, "temp", name_no_ext)
+        TEMP_FILE = os.path.join("data", type, "temp", name)
         
-        os.makedirs(os.path.join("data", tipo), exist_ok=True)
+        os.makedirs(os.path.join("data", type), exist_ok=True)
         os.makedirs(os.path.dirname(TEMP_FILE), exist_ok=True)
 
         response = requests.get(link, stream=True)
