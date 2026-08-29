@@ -7,7 +7,7 @@ import yfinance as yf
 import pandas as pd
 from dotenv import load_dotenv
 
-load_dotenv("../.env")
+load_dotenv("../../.env")
 
 TOKEN = os.getenv("BRAPI_TOKEN")
 

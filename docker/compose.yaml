@@ -1,0 +1,72 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: stocks_postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+
+    ports:
+      - "5432:5432"
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  minio:
+    image: minio/minio:latest
+    container_name: stocks_minio
+    restart: unless-stopped
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    volumes:
+      - ../data/minio:/data
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+
+  airflow:
+    image: apache/airflow:3.1.0
+    container_name: stocks_airflow
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+
+    volumes:
+      - ../dags:/opt/airflow/dags
+      - ../logs:/opt/airflow/logs
+      - ../plugins:/opt/airflow/plugins
+      - ../config:/opt/airflow/config
+      - ../pipeline:/opt/airflow/pipeline
+      - ../pull_data:/opt/airflow/pull_data
+      - ../data:/opt/airflow/data
+
+    ports:
+      - "8080:8080"
+
+    command: standalone
