@@ -1,13 +1,14 @@
+```python
 import os
+import io
 import json
 import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
+import boto3
 import yfinance as yf
 import pandas as pd
 from dotenv import load_dotenv
-
 
 load_dotenv("/opt/airflow/.env")
 
@@ -19,9 +20,20 @@ HEADERS = {
 }
 
 METADATA_PATH = "/opt/airflow/data/state/yfinance/stocks_metadata.json"
-STOCKS_PATH = "/opt/airflow/data/stocks"
-SHARES_PATH = "/opt/airflow/data/shares"
-DIVIDENDS_PATH = "/opt/airflow/data/dividends"
+
+MINIO_BUCKET = "bronze"
+
+STOCKS_PREFIX = "yfinance/stocks"
+SHARES_PREFIX = "yfinance/shares"
+DIVIDENDS_PREFIX = "yfinance/dividends"
+
+def get_minio_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=os.environ["MINIO_ENDPOINT"],
+        aws_access_key_id=os.environ["MINIO_ROOT_USER"],
+        aws_secret_access_key=os.environ["MINIO_ROOT_PASSWORD"]
+    )
 
 def get_stocks():
     stocks = []
@@ -36,12 +48,7 @@ def get_stocks():
             "limit": 100
         }
 
-        response = requests.get(
-            URL,
-            headers=HEADERS,
-            params=params,
-            timeout=30
-        )
+        response = requests.get(URL, headers=HEADERS, params=params, timeout=30)
         response.raise_for_status()
 
         data = response.json()
@@ -56,6 +63,7 @@ def get_stocks():
         page += 1
 
     stocks = [stock for stock in stocks if not stock.endswith("F")]
+
     return sorted(set(stocks))
 
 def should_update():
@@ -74,11 +82,7 @@ def should_update():
         last_update = last_update.replace(tzinfo=tz_sp)
 
     update = (
-        last_update.date() < now.date()
-        or (
-            last_update.date() == now.date()
-            and 10 <= now.hour <= 17
-        )
+        last_update.date() < now.date() or (last_update.date() == now.date() and 10 <= now.hour <= 17)
     )
 
     start_date = last_update.strftime("%Y-%m-%d")
@@ -97,13 +101,40 @@ def update_metadata():
             indent=4
         )
 
+def get_previous_csv(client, key):
+    try:
+        response = client.get_object(Bucket=MINIO_BUCKET, Key=key)
+        content = response["Body"].read()
+
+        return pd.read_csv(io.BytesIO(content))
+
+    except client.exceptions.NoSuchKey:
+        return None
+
+    except Exception as e:
+        if "NoSuchKey" in str(e) or "specified key does not exist" in str(e):
+            return None
+        raise
+
+def upload_csv(client, data, key):
+    buffer = io.BytesIO()
+    data.to_csv(buffer, index=False)
+    buffer.seek(0)
+
+    client.put_object(
+        Bucket=MINIO_BUCKET,
+        Key=key,
+        Body=buffer.getvalue(),
+        ContentType="text/csv"
+    )
 
 def download_stocks(stocks, start_date):
-    os.makedirs(STOCKS_PATH, exist_ok=True)
+    client = get_minio_client()
     failed = []
 
     for stock in stocks:
         ticker = f"{stock}.SA"
+        key = f"{STOCKS_PREFIX}/{stock}.csv"
 
         for attempt in range(1, 6):
             print(f"Baixando {ticker}... tentativa {attempt}/5")
@@ -134,18 +165,24 @@ def download_stocks(stocks, start_date):
                 ]
                 data["Date"] = data["Date"].dt.date
 
-                path = os.path.join(STOCKS_PATH, f"{stock}.csv")
+                historical = get_previous_csv(client, key)
 
-                if os.path.exists(path):
-                    historical = pd.read_csv(path)
+                if historical is not None:
+                    historical["Date"] = pd.to_datetime(historical["Date"]).dt.date
                     historical = historical.iloc[:-1]
-                    data = pd.concat(
-                        [historical, data],
-                        ignore_index=True
-                    )
 
-                data.to_csv(path, index=False)
-                print(f"Salvo: {path}")
+                    data = pd.concat([historical, data], ignore_index=True)
+
+                data = (
+                    data
+                    .drop_duplicates(subset=["Date"], keep="last")
+                    .sort_values("Date")
+                    .reset_index(drop=True)
+                )
+
+                upload_csv(client, data, key)
+
+                print(f"Salvo no Bronze: s3://{MINIO_BUCKET}/{key}")
                 break
 
             except Exception as e:
@@ -156,26 +193,23 @@ def download_stocks(stocks, start_date):
                     print(f"FALHOU 5 VEZES: {ticker}")
 
     print("\nTickers que falharam:")
+
     for ticker in failed:
         print(ticker)
 
 def download_shares(stocks, start_date):
-    os.makedirs(SHARES_PATH, exist_ok=True)
+    client = get_minio_client()
     failed = []
 
     for stock in stocks:
         ticker = f"{stock}.SA"
+        key = f"{SHARES_PREFIX}/{stock}.csv"
 
         for attempt in range(1, 6):
-            print(
-                f"Baixando ações {ticker}... "
-                f"tentativa {attempt}/5"
-            )
+            print(f"Baixando ações {ticker}... tentativa {attempt}/5")
 
             try:
-                shares = yf.Ticker(ticker).get_shares_full(
-                    start=start_date
-                )
+                shares = yf.Ticker(ticker).get_shares_full(start=start_date)
 
                 if shares is None or shares.empty:
                     print(f"{ticker}: nenhuma informação de ações")
@@ -183,40 +217,25 @@ def download_shares(stocks, start_date):
 
                 data = shares.reset_index()
                 data.columns = ["Date", "Shares"]
+                data["Date"] = pd.to_datetime(data["Date"]).dt.date
 
-                data["Date"] = pd.to_datetime(
-                    data["Date"]
-                ).dt.date
+                historical = get_previous_csv(client, key)
 
-                path = os.path.join(
-                    SHARES_PATH,
-                    f"{stock}.csv"
-                )
+                if historical is not None:
+                    historical["Date"] = pd.to_datetime(historical["Date"]).dt.date
 
-                if os.path.exists(path):
-                    historical = pd.read_csv(path)
-
-                    historical["Date"] = pd.to_datetime(
-                        historical["Date"]
-                    ).dt.date
-
-                    data = pd.concat(
-                        [historical, data],
-                        ignore_index=True
-                    )
+                    data = pd.concat([historical, data], ignore_index=True)
 
                     data = (
                         data
-                        .drop_duplicates(
-                            subset=["Date"],
-                            keep="last"
-                        )
+                        .drop_duplicates(subset=["Date"], keep="last")
                         .sort_values("Date")
                         .reset_index(drop=True)
                     )
 
-                data.to_csv(path, index=False)
-                print(f"Ações salvas: {path}")
+                upload_csv(client, data, key)
+
+                print(f"Ações salvas no Bronze: s3://{MINIO_BUCKET}/{key}")
                 break
 
             except Exception as e:
@@ -227,21 +246,20 @@ def download_shares(stocks, start_date):
                     print(f"FALHOU 5 VEZES: {ticker}")
 
     print("\nTickers de ações que falharam:")
+
     for ticker in failed:
         print(ticker)
 
 def download_dividends(stocks, start_date):
-    os.makedirs(DIVIDENDS_PATH, exist_ok=True)
+    client = get_minio_client()
     failed = []
 
     for stock in stocks:
         ticker = f"{stock}.SA"
+        key = f"{DIVIDENDS_PREFIX}/{stock}.csv"
 
         for attempt in range(1, 6):
-            print(
-                f"Baixando dividendos {ticker}... "
-                f"tentativa {attempt}/5"
-            )
+            print(f"Baixando dividendos {ticker}... tentativa {attempt}/5")
 
             try:
                 dividends = yf.Ticker(ticker).dividends
@@ -257,30 +275,23 @@ def download_dividends(stocks, start_date):
                 data.columns = ["Date", "Dividend"]
                 data["Date"] = pd.to_datetime(data["Date"]).dt.date
 
-                path = os.path.join(DIVIDENDS_PATH,f"{stock}.csv")
+                historical = get_previous_csv(client, key)
 
-                if os.path.exists(path):
-                    historical = pd.read_csv(path)
+                if historical is not None:
+                    historical["Date"] = pd.to_datetime(historical["Date"]).dt.date
 
-                    historical["Date"] = pd.to_datetime(
-                        historical["Date"]
-                    ).dt.date
-
-                    data = pd.concat(
-                        [historical, data],
-                        ignore_index=True
-                    )
+                    data = pd.concat([historical, data], ignore_index=True)
 
                     data = (
                         data
-                        .drop_duplicates(
-                            subset=["Date"],
-                            keep="last"
-                        ).sort_values("Date").reset_index(drop=True)
+                        .drop_duplicates(subset=["Date"], keep="last")
+                        .sort_values("Date")
+                        .reset_index(drop=True)
                     )
 
-                data.to_csv(path, index=False)
-                print(f"Dividendos salvos: {path}")
+                upload_csv(client, data, key)
+
+                print(f"Dividendos salvos no Bronze: s3://{MINIO_BUCKET}/{key}")
                 break
 
             except Exception as e:
@@ -294,6 +305,7 @@ def download_dividends(stocks, start_date):
     for ticker in failed:
         print(ticker)
 
+
 def update_stocks():
     update, start_date = should_update()
 
@@ -302,13 +314,11 @@ def update_stocks():
         return None
 
     stocks = get_stocks()
-
     download_stocks(stocks, start_date)
     download_dividends(stocks, start_date)
     download_shares(stocks, start_date)
 
     update_metadata()
-
     print(f"{len(stocks)} ações encontradas.")
     return stocks
 
