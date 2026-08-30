@@ -43,7 +43,9 @@ services:
 
 
   airflow:
-    image: apache/airflow:3.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: stocks_airflow
     restart: unless-stopped
 
@@ -56,6 +58,9 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
     volumes:
       - ../dags:/opt/airflow/dags
