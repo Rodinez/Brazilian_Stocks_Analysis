@@ -10,7 +10,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 load_dotenv("/opt/airflow/.env")
 
