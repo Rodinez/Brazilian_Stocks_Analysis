@@ -1,4 +1,3 @@
-```python
 import os
 import io
 import json
@@ -9,6 +8,9 @@ import boto3
 import yfinance as yf
 import pandas as pd
 from dotenv import load_dotenv
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 
 load_dotenv("/opt/airflow/.env")
 
@@ -322,5 +324,15 @@ def update_stocks():
     print(f"{len(stocks)} ações encontradas.")
     return stocks
 
-if __name__ == "__main__":
-    update_stocks()
+with DAG(
+    dag_id="stocks_history",
+    start_date=datetime(2026, 8, 30),
+    schedule=None,
+    catchup=False,
+    tags=["bronze", "yfinance"]
+) as dag:
+
+    update_stocks_task = PythonOperator(
+        task_id="update_stocks",
+        python_callable=update_stocks
+    )

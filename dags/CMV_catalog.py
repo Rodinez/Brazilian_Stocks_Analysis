@@ -1,10 +1,14 @@
 import requests
+import datetime
 import json
 import os
 import zipfile
 import tempfile
 import boto3
 from bs4 import BeautifulSoup
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
 
 datasets = {
     "dfp": "https://dados.cvm.gov.br/dados/CIA_ABERTA/DOC/DFP/DADOS/",
@@ -134,5 +138,15 @@ def check_catalog():
         download_new_files(links, client)
         save_catalog(client, data)
 
-if __name__ == "__main__":
-    check_catalog()
+with DAG(
+    dag_id="CMV_catalog",
+    start_date=datetime(2026, 8, 30),
+    schedule=None,
+    catchup=False,
+    tags=["bronze", "CMV"]
+) as dag:
+
+    CMV_catalog_task = PythonOperator(
+        task_id="CMV_catalog",
+        python_callable=check_catalog
+    )
