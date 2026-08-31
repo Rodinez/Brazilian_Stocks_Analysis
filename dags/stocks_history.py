@@ -20,8 +20,8 @@ URL = "https://brapi.dev/api/v2/tickers"
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}"
 }
-
-METADATA_PATH = "/opt/airflow/data/state/yfinance/stocks_metadata.json"
+METADATA_BUCKET = "metadata"
+METADATA_PREFIX = "yfinance/stocks_metadata.json"
 
 MINIO_BUCKET = "bronze"
 
@@ -69,39 +69,43 @@ def get_stocks():
     return sorted(set(stocks))
 
 def should_update():
-    tz_sp = ZoneInfo("America/Sao_Paulo")
-    now = datetime.now(tz_sp)
+    client = get_minio_client()
 
-    if not os.path.exists(METADATA_PATH):
-        return True, "2010-01-01"
+    try:
+        response = client.get_object(
+            Bucket=METADATA_BUCKET,
+            Key=METADATA_PREFIX
+        )
 
-    with open(METADATA_PATH, encoding="utf-8") as f:
-        metadata = json.load(f)
+        metadata = json.loads(response["Body"].read().decode("utf-8"))
+        last_update = datetime.fromisoformat(metadata["last_update"])
+        return last_update.strftime("%Y-%m-%d")
 
-    last_update = datetime.fromisoformat(metadata["last_update"])
+    except client.exceptions.NoSuchKey:
+        return "2010-01-01"
 
-    if last_update.tzinfo is None:
-        last_update = last_update.replace(tzinfo=tz_sp)
+    except Exception as e:
+        if ("NoSuchKey" in str(e) or "specified key does not exist" in str(e)):
+            return "2010-01-01"
 
-    update = (
-        last_update.date() < now.date() or (last_update.date() == now.date() and 10 <= now.hour <= 17)
-    )
-
-    start_date = last_update.strftime("%Y-%m-%d")
-
-    return update, start_date
+        raise
 
 def update_metadata():
     tz_sp = ZoneInfo("America/Sao_Paulo")
 
-    os.makedirs(os.path.dirname(METADATA_PATH), exist_ok=True)
+    metadata = {"last_update": datetime.now(tz_sp).isoformat()}
 
-    with open(METADATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(
-            {"last_update": datetime.now(tz_sp).isoformat()},
-            f,
+    client = get_minio_client()
+
+    client.put_object(
+        Bucket=METADATA_BUCKET,
+        Key=METADATA_PREFIX,
+        Body=json.dumps(
+            metadata,
             indent=4
-        )
+        ).encode("utf-8"),
+        ContentType="application/json"
+    )
 
 def get_previous_csv(client, key):
     try:
@@ -309,12 +313,7 @@ def download_dividends(stocks, start_date):
 
 
 def update_stocks():
-    update, start_date = should_update()
-
-    if not update:
-        print("Nenhuma atualização necessária.")
-        return None
-
+    start_date = should_update()
     stocks = get_stocks()
     download_stocks(stocks, start_date)
     download_dividends(stocks, start_date)
